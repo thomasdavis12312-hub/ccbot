@@ -13,6 +13,7 @@ DATA_FILE = "worker_logs.json"
 BLACKLIST = {"495", "tbe", "fuerte", "fuerta", "zteam", "st", "TBE", "FUERTE", "FUERTA", "ZTEAM", "ST", "VUPU", "", "-"}
 
 USD_TO_CNY = 6.8
+DODEP_RATE = 0.25
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -43,25 +44,57 @@ def save_data():
     with open(DATA_FILE, 'w', encoding='utf-8') as f:
         json.dump({'logs': dict(logs), 'sums': dict(sums), 'user_map': user_map}, f, ensure_ascii=False, indent=2)
 
+def parse_number(raw: str) -> float:
+    clean = re.sub(r'[^\d.,]', '', raw).replace(',', '.')
+    if clean.count('.') > 1:
+        clean = clean.replace('.', '', clean.count('.') - 1)
+    return float(clean) if clean else 0.0
+
 def parse_sum(content: str) -> float:
     total = 0.0
-    lower = content.lower()
-    sum_match = re.search(r'сумма[:\s]*(.+?)(?:\n|$)', lower)
-    if sum_match:
-        line = sum_match.group(1)
-        parts = re.split(r'\+', line)
-        for part in parts:
-            part = part.strip()
-            num_match = re.search(r'(\d[\d\s.,]*)', part)
-            if num_match:
-                num = float(re.sub(r'[^\d.]', '', num_match.group(1).replace(',', '.')))
-                if '$' in part or 'dollar' in part or 'дол' in part:
-                    total += num * 0.70
-                elif any(x in part for x in ['y', 'юан', 'yuan', 'dodep']):
-                    total += num * 0.25
-                else:
-                    total += num * 0.70
+    sum_match = re.search(r'сумма\s*:\s*(.+?)(?:\n|$)', content, re.IGNORECASE)
+    if not sum_match:
+        return total
+
+    for index, part in enumerate(re.split(r'\+', sum_match.group(1))):
+        part = part.strip()
+        num_match = re.search(r'(\d[\d\s.,]*)', part)
+        if not num_match:
+            continue
+
+        amount = parse_number(num_match.group(1))
+        if index > 0 or re.search(r'\b(?:dodep|dod|додеп|дод)\b', part, re.IGNORECASE):
+            total += amount * DODEP_RATE
+        else:
+            total += amount
+
     return round(total, 2)
+
+def has_vac_marker(message) -> bool:
+    content = message.content.lower()
+    return (
+        bool(message.stickers)
+        or "❄️" in message.content
+        or ":vacsticker:" in content
+        or ":blow:" in content
+    )
+
+def parse_worker(content: str):
+    match = re.search(r'^\s*.*?Worker\s*:\s*(.+?)\s*$', content, re.IGNORECASE | re.MULTILINE)
+    if not match:
+        return None
+
+    worker_raw = match.group(1).strip()
+    mention_match = re.search(r'<@!?(\d+)>', worker_raw)
+    if mention_match:
+        return mention_match.group(1)
+
+    user_match = re.search(r'@([^\s<@#:,]+)', worker_raw)
+    if user_match:
+        return user_match.group(1).strip()
+
+    worker_raw = re.sub(r'^@', '', worker_raw).strip()
+    return worker_raw or None
 
 async def update_live_top():
     global live_message
@@ -122,15 +155,13 @@ def process_message(message):
     content = message.content
     if not re.search(r'\bWorker\s*:', content, re.IGNORECASE):
         return False
-    has_sticker = bool(message.stickers) or "❄️" in content or ":vacsticker:" in content
-    if not has_sticker:
+    if not has_vac_marker(message):
         return False
-    match = re.search(r'Worker\s*:\s*@?(.+?)(?:\s|$|by:|\n)', content, re.IGNORECASE | re.DOTALL)
-    if not match:
+
+    worker_raw = parse_worker(content)
+    if not worker_raw:
         return False
-    worker_raw = match.group(1).strip()
-    worker_raw = re.sub(r'<@!?(\d+)>', r'\1', worker_raw).strip()
-    if not worker_raw or len(worker_raw) < 2:
+    if not worker_raw:
         return False
     uid = worker_raw if not worker_raw.isdigit() else str(worker_raw)
     if worker_raw.isdigit():
