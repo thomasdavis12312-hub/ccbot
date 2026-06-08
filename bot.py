@@ -130,7 +130,7 @@ async def on_ready():
     print("Бот запущен. Пиши /starttop")
     
     while True:
-        await asyncio.sleep(300)
+        await asyncio.sleep(86400)
         await update_live_top()
 
 async def scan_channel():
@@ -182,7 +182,7 @@ async def starttop(interaction: discord.Interaction):
     embed = discord.Embed(title="🏆 LIVE TOP 10 WORKERS", color=0x00ff00, description="Загрузка...")
     live_message = await interaction.channel.send(embed=embed)
     
-    await interaction.followup.send("✅ Live топ запущен! Обновляется каждые 5 минут.", ephemeral=True)
+    await interaction.followup.send("✅ Live топ запущен! Обновляется раз в день.", ephemeral=True)
     await update_live_top()
 
 @tree.command(name="top", description="Ваше личное место в топе")
