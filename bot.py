@@ -50,6 +50,9 @@ def parse_number(raw: str) -> float:
         clean = clean.replace('.', '', clean.count('.') - 1)
     return float(clean) if clean else 0.0
 
+def is_cny_amount(part: str) -> bool:
+    return bool(re.search(r'(?:\d[\d\s.,]*\s*(?:y|¥)|yuan|юан)', part, re.IGNORECASE))
+
 def parse_sum(content: str) -> float:
     total = 0.0
     sum_match = re.search(r'сумма\s*:\s*(.+?)(?:\n|$)', content, re.IGNORECASE)
@@ -64,6 +67,8 @@ def parse_sum(content: str) -> float:
 
         amount = parse_number(num_match.group(1))
         if index > 0 or re.search(r'\b(?:dodep|dod|додеп|дод)\b', part, re.IGNORECASE):
+            if is_cny_amount(part):
+                amount = amount / USD_TO_CNY
             total += amount * DODEP_RATE
         else:
             total += amount
@@ -159,8 +164,6 @@ def process_message(message):
         return False
 
     worker_raw = parse_worker(content)
-    if not worker_raw:
-        return False
     if not worker_raw:
         return False
     uid = worker_raw if not worker_raw.isdigit() else str(worker_raw)
