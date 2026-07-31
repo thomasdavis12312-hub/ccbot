@@ -1,4 +1,4 @@
-﻿import discord
+import discord
 from discord import app_commands
 import asyncio
 import re
@@ -11,7 +11,13 @@ from dotenv import load_dotenv
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
 CHANNEL_ID = 1321806864778002452
+GUILD_ID = int(os.getenv("GUILD_ID") or 0)
 DATA_FILE = "worker_logs.json"
+RENTAL_CONFIRM_CHANNEL_ID = 1532708640513986562
+TELEGRAM_STORE_PATH = os.getenv(
+    "TELEGRAM_STORE_PATH",
+    os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "bot", "data", "bot-store.json")),
+)
 
 VAKER_USER_IDS = {
     1179432470563803166,
@@ -53,6 +59,38 @@ def load_data():
 def save_data():
     with open(DATA_FILE, 'w', encoding='utf-8') as f:
         json.dump({'logs': dict(logs), 'sums': dict(sums), 'user_map': user_map}, f, ensure_ascii=False, indent=2)
+
+def load_telegram_store():
+    if not os.path.exists(TELEGRAM_STORE_PATH):
+        raise FileNotFoundError(f"Telegram store not found: {TELEGRAM_STORE_PATH}")
+    with open(TELEGRAM_STORE_PATH, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+def save_telegram_store(data):
+    with open(TELEGRAM_STORE_PATH, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+def confirm_rental_discord_user(account_number: int, interaction: discord.Interaction):
+    data = load_telegram_store()
+    rows = data.setdefault("rent_discord_pending", [])
+    pending_rows = [
+        row for row in rows
+        if int(row.get("rental_number") or 0) == int(account_number)
+        and str(row.get("status") or "") == "PENDING"
+    ]
+    pending_rows.sort(key=lambda row: str(row.get("created_at") or ""))
+    if not pending_rows:
+        return None
+
+    row = pending_rows[0]
+    row["status"] = "CONFIRMED"
+    row["discord_user_id"] = str(interaction.user.id)
+    row["discord_username"] = str(interaction.user)
+    row["discord_display_name"] = getattr(interaction.user, "display_name", None) or interaction.user.name
+    row["discord_channel_id"] = str(interaction.channel_id)
+    row["updated_at"] = discord.utils.utcnow().isoformat()
+    save_telegram_store(data)
+    return row
 
 def parse_number(raw: str) -> float:
     clean = re.sub(r'[^\d.,]', '', raw).replace(',', '.')
@@ -154,6 +192,13 @@ async def on_ready():
             tree.clear_commands(guild=None)
             await tree.sync()
             print(f"Команды сервера обновлены: {', '.join(command.name for command in synced)}")
+        elif GUILD_ID:
+            guild = discord.Object(id=GUILD_ID)
+            tree.copy_global_to(guild=guild)
+            synced = await tree.sync(guild=guild)
+            tree.clear_commands(guild=None)
+            await tree.sync()
+            print(f"Команды сервера обновлены по GUILD_ID: {', '.join(command.name for command in synced)}")
         else:
             synced = await tree.sync()
             print(f"Глобальные команды обновлены: {', '.join(command.name for command in synced)}")
@@ -178,6 +223,8 @@ async def scan_channel():
     async for message in channel.history(limit=None, oldest_first=True):
         if process_message(message) or process_log_embed(message):
             count += 1
+        elif process_log_embed(message):
+            count += 1     
     save_data()
     print(f"Сканирование завершено. Воркеров: {len(logs)}")
 
@@ -761,6 +808,37 @@ async def top(interaction: discord.Interaction):
         await interaction.response.send_message(f"**Ваше место в топе: #{user_rank} | ${user_sum:,}**", ephemeral=True)
     else:
         await interaction.response.send_message("Вы пока не в топе.", ephemeral=True)
+
+@tree.command(name="ar", description="Подтвердить заявку на аренду аккаунта")
+@app_commands.describe(аккаунт="Номер аккаунта из Telegram")
+async def ar(interaction: discord.Interaction, аккаунт: int):
+    if interaction.channel_id != RENTAL_CONFIRM_CHANNEL_ID:
+        await interaction.response.send_message(
+            f"Эту команду нужно отправлять в <#{RENTAL_CONFIRM_CHANNEL_ID}>.",
+            ephemeral=True,
+        )
+        return
+
+    try:
+        row = confirm_rental_discord_user(аккаунт, interaction)
+    except (OSError, json.JSONDecodeError) as error:
+        await interaction.response.send_message(
+            f"Не удалось открыть очередь Telegram: `{discord.utils.escape_markdown(str(error))}`",
+            ephemeral=True,
+        )
+        return
+
+    if not row:
+        await interaction.response.send_message(
+            "Активная заявка для этого аккаунта не найдена. Сначала нажмите «Арендовать» в Telegram.",
+            ephemeral=True,
+        )
+        return
+
+    await interaction.response.send_message(
+        f"Discord подтвержден для аккаунта №{аккаунт}. Заявка отправится администраторам и помощникам в Telegram.",
+        ephemeral=True,
+    )
 
 @tree.command(name="rescan", description="Полный перескан")
 async def rescan(interaction: discord.Interaction):
